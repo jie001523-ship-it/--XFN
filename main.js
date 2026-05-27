@@ -41,8 +41,8 @@ let tray = null;
 let isQuitting = false;
 
 const COLLAPSED_SIZE = { width: 440, height: 130 };
-const EXPANDED_SIZE = { width: 540, height: 700 };
-const UNIFIED_SIZE = { width: 540, height: 520 };
+const EXPANDED_SIZE = { width: 540, height: 520 };
+const SNAPPED_SIZE = { width: 200, height: 36 };
 
 // ── Snap-to-top ─────────────────────────────────────────────────
 const SNAPPED_VISIBLE = 36;
@@ -105,8 +105,8 @@ function createWindow() {
   const stored = getStoredBounds();
 
   const winOpts = {
-    width: stored ? stored.width : UNIFIED_SIZE.width,
-    height: stored ? stored.height : UNIFIED_SIZE.height,
+    width: stored ? stored.width : COLLAPSED_SIZE.width,
+    height: stored ? stored.height : COLLAPSED_SIZE.height,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -126,12 +126,11 @@ function createWindow() {
     // center on primary
     const primary = screen.getPrimaryDisplay();
     const { width: sw, height: sh } = primary.workAreaSize;
-    winOpts.x = Math.round((sw - UNIFIED_SIZE.width) / 2);
-    winOpts.y = Math.round((sh - UNIFIED_SIZE.height) / 2);
+    winOpts.x = Math.round((sw - COLLAPSED_SIZE.width) / 2);
+    winOpts.y = Math.round((sh - COLLAPSED_SIZE.height) / 2);
   }
 
   mainWindow = new BrowserWindow(winOpts);
-  mainWindow.setBackgroundColor('#01010101'); // prevent mouse passthrough on transparent areas
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
@@ -152,26 +151,26 @@ function createWindow() {
     const topEdge = display.bounds.y;
 
     if (!isSnapped && bounds.y <= topEdge + SNAP_THRESHOLD) {
-      // Snap: position at top edge, CSS shows only snap-indicator (rest transparent)
+      // Snap: shrink to mini pill at top
       isSnapping = true;
       isSnapped = true;
       mainWindow.setBounds({
-        x: bounds.x,
+        x: bounds.x + Math.round((bounds.width - SNAPPED_SIZE.width) / 2),
         y: topEdge,
-        width: UNIFIED_SIZE.width,
-        height: UNIFIED_SIZE.height,
+        width: SNAPPED_SIZE.width,
+        height: SNAPPED_SIZE.height,
       }, true);
       mainWindow.webContents.send('snap-changed', true);
       isSnapping = false;
     } else if (isSnapped && bounds.y > topEdge + UNSNAP_THRESHOLD) {
-      // Unsnap by drag
+      // Unsnap by drag: restore collapsed size
       isSnapping = true;
       isSnapped = false;
       mainWindow.setBounds({
         x: bounds.x,
         y: bounds.y,
-        width: UNIFIED_SIZE.width,
-        height: UNIFIED_SIZE.height,
+        width: COLLAPSED_SIZE.width,
+        height: COLLAPSED_SIZE.height,
       }, true);
       mainWindow.webContents.send('snap-changed', false);
       isSnapping = false;
@@ -240,9 +239,13 @@ function updateTrayMenu() {
 }
 
 // ── Window resize helper ──────────────────────────────────────
-// Window size stays UNIFIED; expand/collapse is CSS-only
 function resizeWindow(collapsed) {
-  // no-op: window size is fixed, CSS handles the visual change
+  if (!mainWindow) return;
+  const size = collapsed ? COLLAPSED_SIZE : EXPANDED_SIZE;
+  const current = mainWindow.getBounds();
+  const cx = current.x + Math.round(current.width / 2);
+  const newX = cx - Math.round(size.width / 2);
+  mainWindow.setBounds({ x: newX, y: current.y, width: size.width, height: size.height }, true);
 }
 
 // ── IPC handlers ──────────────────────────────────────────────
@@ -297,20 +300,34 @@ function setupIPC() {
     isHoverExpanded = true;
     const bounds = mainWindow.getBounds();
     preHoverBounds = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+    const display = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y });
 
     if (isSnapped) {
+      // Expand from snapped mini pill → full panel
+      const cx = bounds.x + Math.round(bounds.width / 2);
+      mainWindow.setBounds({
+        x: cx - Math.round(EXPANDED_SIZE.width / 2),
+        y: display.bounds.y,
+        width: EXPANDED_SIZE.width,
+        height: EXPANDED_SIZE.height,
+      }, true);
       mainWindow.webContents.send('hover-state', 'expanded-from-snap');
     } else {
       const data = loadData();
       if (data.preferences?.isCollapsed !== false) {
+        const cx = bounds.x + Math.round(bounds.width / 2);
+        mainWindow.setBounds({
+          x: cx - Math.round(EXPANDED_SIZE.width / 2),
+          y: bounds.y,
+          width: EXPANDED_SIZE.width,
+          height: EXPANDED_SIZE.height,
+        }, true);
         mainWindow.webContents.send('hover-state', 'expanded-from-collapse');
       } else {
         isHoverExpanded = false;
         return false;
       }
     }
-
-    // Start polling: check if mouse left the window
     startHoverLeavePoll();
     return true;
   });
@@ -318,12 +335,25 @@ function setupIPC() {
   ipcMain.handle('hover-collapse', () => {
     if (!mainWindow || mainWindow.isDestroyed() || !isHoverExpanded) return false;
     isHoverExpanded = false;
+    const restore = preHoverBounds;
     preHoverBounds = null;
     stopHoverLeavePoll();
 
     if (isSnapped) {
+      mainWindow.setBounds({
+        x: restore ? restore.x : mainWindow.getBounds().x,
+        y: 0,
+        width: SNAPPED_SIZE.width,
+        height: SNAPPED_SIZE.height,
+      }, true);
       mainWindow.webContents.send('hover-state', 'snapped');
     } else {
+      mainWindow.setBounds({
+        x: restore ? restore.x : mainWindow.getBounds().x,
+        y: restore ? restore.y : mainWindow.getBounds().y,
+        width: COLLAPSED_SIZE.width,
+        height: COLLAPSED_SIZE.height,
+      }, true);
       mainWindow.webContents.send('hover-state', 'collapsed');
     }
     return true;
@@ -335,11 +365,12 @@ function setupIPC() {
     const display = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y });
     isSnapped = false;
     isHoverExpanded = false;
+    stopHoverLeavePoll();
     mainWindow.setBounds({
       x: bounds.x,
       y: Math.max(display.bounds.y + 40, bounds.y),
-      width: UNIFIED_SIZE.width,
-      height: UNIFIED_SIZE.height,
+      width: COLLAPSED_SIZE.width,
+      height: COLLAPSED_SIZE.height,
     }, true);
     mainWindow.webContents.send('snap-changed', false);
     return true;
