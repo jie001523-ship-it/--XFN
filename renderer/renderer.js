@@ -18,6 +18,7 @@ const $ = (sel) => document.querySelector(sel);
 const app = $('#app');
 const capsule = $('#capsule');
 const badge = $('#badge');
+const snapBadge = $('#snap-badge');
 const expandArrow = $('#expand-arrow');
 const addBtn = $('#add-btn');
 const inputPanel = $('#input-panel');
@@ -32,6 +33,7 @@ const completedHeader = $('#completed-header');
 const completedList = $('#completed-list');
 const completedCount = $('#completed-count');
 const clearCompletedBtn = $('#clear-completed');
+const snapIndicator = $('#snap-indicator');
 
 // ── Priority helpers ──────────────────────────────────────────
 const PRIORITY_ORDER = { high: 0, medium: 1, low: 2 };
@@ -95,8 +97,11 @@ function renderBadge() {
   if (count > 0) {
     badge.style.display = 'inline-flex';
     badge.textContent = count;
+    snapBadge.style.display = 'inline-flex';
+    snapBadge.textContent = count;
   } else {
     badge.style.display = 'none';
+    snapBadge.style.display = 'none';
   }
 }
 
@@ -195,6 +200,8 @@ function renderCompletedList() {
 }
 
 function updateUIMode() {
+  // Clear any lingering hover classes — explicit toggle always wins
+  app.classList.remove('hover-expanded-snap', 'hover-expanded-collapse');
   if (state.isCollapsed) {
     app.classList.remove('expanded');
     app.classList.add('collapsed');
@@ -546,6 +553,69 @@ app.addEventListener('mousedown', (e) => {
   if (e.target === app || e.target === panel || e.target === todoList) {
     resetAllSwipes();
   }
+});
+
+// ── Snap-to-top ────────────────────────────────────────────────
+window.todoAPI.onSnapChanged((snapped) => {
+  if (snapped) {
+    app.classList.add('snapped');
+    app.classList.remove('expanded', 'collapsed');
+  } else {
+    app.classList.remove('snapped');
+  }
+});
+
+window.todoAPI.onHoverState((state) => {
+  app.classList.remove('hover-expanded-snap', 'hover-expanded-collapse');
+  if (state === 'expanded-from-snap') {
+    app.classList.add('hover-expanded-snap');
+  } else if (state === 'expanded-from-collapse') {
+    app.classList.add('hover-expanded-collapse');
+  }
+});
+
+let hoverExpandTimer = null;
+let hoverCollapseTimer = null;
+
+function clearAllHoverTimers() {
+  if (hoverExpandTimer) { clearTimeout(hoverExpandTimer); hoverExpandTimer = null; }
+  if (hoverCollapseTimer) { clearTimeout(hoverCollapseTimer); hoverCollapseTimer = null; }
+}
+
+function scheduleHoverExpand() {
+  clearAllHoverTimers();
+  hoverExpandTimer = setTimeout(() => {
+    window.todoAPI.hoverExpand();
+    hoverExpandTimer = null;
+  }, 500);
+}
+
+function scheduleHoverCollapse() {
+  clearAllHoverTimers();
+  hoverCollapseTimer = setTimeout(() => {
+    window.todoAPI.hoverCollapse();
+    hoverCollapseTimer = null;
+  }, 300);
+}
+
+// Hover peek triggers via body mouseover (bubbles from child elements)
+document.body.addEventListener('mouseover', (e) => {
+  if (snapIndicator.contains(e.target)) {
+    scheduleHoverExpand();
+  } else if (expandArrow.contains(e.target) && !app.classList.contains('snapped')) {
+    scheduleHoverExpand();
+  }
+});
+
+// Click to persist expand/collapse (cancel hover behavior)
+expandArrow.addEventListener('click', () => {
+  clearAllHoverTimers();
+});
+
+snapIndicator.addEventListener('click', (e) => {
+  e.stopPropagation();
+  clearAllHoverTimers();
+  window.todoAPI.unsnapWindow();
 });
 
 // ── Init ──────────────────────────────────────────────────────

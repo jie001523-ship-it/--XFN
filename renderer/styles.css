@@ -35,7 +35,7 @@
 
 html, body {
   width: 100%; height: 100%; overflow: hidden;
-  background: transparent;
+  background: rgba(0,0,0,0.005); /* prevent mouse event passthrough */
   font-family: var(--font);
   -webkit-font-smoothing: antialiased;
   user-select: none;
@@ -43,6 +43,14 @@ html, body {
 }
 
 /* ── App shell ──────────────────────────────────────────────── */
+.event-catcher {
+  position: fixed;
+  inset: 0;
+  z-index: -999;
+  background: rgba(0,0,0,0.01);
+  pointer-events: auto;
+}
+
 .app {
   position: relative;
   width: 100%; height: 100%;
@@ -50,6 +58,7 @@ html, body {
   flex-direction: column;
   align-items: center;
   padding-top: 20px;
+  background: rgba(0,0,0,0.005); /* capture mouse events across entire window */
 }
 
 /* ── Drag handle ────────────────────────────────────────────── */
@@ -67,11 +76,6 @@ html, body {
   align-items: center;
   gap: 10px;
   z-index: 15;
-}
-
-.app.expanded .capsule-row {
-  width: var(--panel-w);
-  overflow: visible;
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -210,12 +214,22 @@ html, body {
 }
 
 /* ── States ─────────────────────────────────────────────────── */
+.app.collapsed {
+  justify-content: flex-start;
+}
 .app.collapsed .capsule { border-radius: var(--radius-xl); }
 .app.collapsed .panel { display: none; }
 
+.app.expanded {
+  justify-content: flex-start;
+}
 .app.expanded .capsule {
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   width: var(--panel-w);
+}
+.app.expanded .capsule-row {
+  width: var(--panel-w);
+  overflow: visible;
 }
 .app.expanded .panel { display: flex; }
 
@@ -505,7 +519,116 @@ html, body {
 }
 
 /* ══════════════════════════════════════════════════════════════
-   LAYOUT MODES
+   SNAP-TO-TOP
    ══════════════════════════════════════════════════════════════ */
-.app.collapsed { justify-content: center; }
-.app.expanded { justify-content: flex-start; }
+.snap-indicator {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px 16px;
+  min-height: 30px;
+  width: fit-content;
+  margin: 0 auto;
+  background: var(--glass-strong);
+  backdrop-filter: blur(28px) saturate(1.4);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+  border: 1px solid var(--border-glass);
+  border-radius: 15px;
+  box-shadow: var(--shadow-md),
+              inset 0 1px 0 rgba(255,255,255,0.5);
+  color: var(--text-tertiary);
+  cursor: grab;
+  transition: color 0.2s ease;
+  z-index: 200;
+  position: relative;
+}
+.snap-indicator:hover {
+  color: var(--text-primary);
+}
+.snap-indicator > svg {
+  width: 16px;
+  height: 16px;
+  animation: snap-bounce 1.6s ease-in-out infinite;
+}
+.snap-badge {
+  -webkit-app-region: no-drag;
+}
+@keyframes snap-bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(4px); }
+}
+
+/* Snapped: snap-indicator replaces capsule at same position */
+.app.snapped {
+  padding-top: 0;
+  justify-content: flex-start;
+  -webkit-app-region: drag;
+}
+.app.snapped .snap-indicator,
+.app.snapped .snap-indicator * {
+  -webkit-app-region: no-drag;
+}
+.app.snapped .snap-indicator {
+  display: flex;
+}
+.app.snapped .capsule-row {
+  display: none;
+}
+.app.snapped .panel {
+  display: none;
+}
+.app.snapped .drag-handle {
+  display: none;
+}
+
+/* Hover-expanded from snapped: show full panel */
+.app.hover-expanded-snap {
+  padding-top: 0;
+  justify-content: flex-start;
+}
+.app.hover-expanded-snap .snap-indicator {
+  display: none;
+}
+.app.hover-expanded-snap .capsule-row {
+  display: flex;
+  width: var(--panel-w);
+  overflow: visible;
+}
+.app.hover-expanded-snap .capsule {
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  width: var(--panel-w);
+  transition: border-radius 0.28s cubic-bezier(0.22, 0.61, 0.36, 1),
+              width 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.app.hover-expanded-snap .panel {
+  display: flex;
+  animation: fade-in-down 0.28s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+.app.hover-expanded-snap .drag-handle {
+  display: block;
+}
+
+/* Hover-expanded from collapsed: show panel temporarily */
+.app.hover-expanded-collapse {
+  justify-content: flex-start;
+}
+.app.hover-expanded-collapse .capsule-row {
+  width: var(--panel-w);
+  overflow: visible;
+}
+.app.hover-expanded-collapse .capsule {
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  width: var(--panel-w);
+  transition: border-radius 0.28s cubic-bezier(0.22, 0.61, 0.36, 1),
+              width 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.app.hover-expanded-collapse .panel {
+  display: flex;
+  animation: fade-in-down 0.28s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@keyframes fade-in-down {
+  0%   { opacity: 0; transform: translateY(-12px); }
+  100% { opacity: 1; transform: translateY(0); }
+}

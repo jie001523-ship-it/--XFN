@@ -42,6 +42,48 @@ let isQuitting = false;
 
 const COLLAPSED_SIZE = { width: 440, height: 130 };
 const EXPANDED_SIZE = { width: 540, height: 700 };
+const UNIFIED_SIZE = { width: 540, height: 520 };
+
+// ── Snap-to-top ─────────────────────────────────────────────────
+const SNAPPED_VISIBLE = 36;
+const SNAP_THRESHOLD = 25;
+const UNSNAP_THRESHOLD = 55;
+let isSnapped = false;
+let isSnapping = false;
+let isHoverExpanded = false;
+let preHoverBounds = null;
+let hoverLeavePoll = null;
+
+function startHoverLeavePoll() {
+  stopHoverLeavePoll();
+  hoverLeavePoll = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || !isHoverExpanded) {
+      stopHoverLeavePoll();
+      return;
+    }
+    const mousePos = screen.getCursorScreenPoint();
+    const bounds = mainWindow.getBounds();
+    const isInside =
+      mousePos.x >= bounds.x && mousePos.x < bounds.x + bounds.width &&
+      mousePos.y >= bounds.y && mousePos.y < bounds.y + bounds.height;
+    if (!isInside) {
+      isHoverExpanded = false;
+      stopHoverLeavePoll();
+      if (isSnapped) {
+        mainWindow.webContents.send('hover-state', 'snapped');
+      } else {
+        mainWindow.webContents.send('hover-state', 'collapsed');
+      }
+    }
+  }, 250);
+}
+
+function stopHoverLeavePoll() {
+  if (hoverLeavePoll) {
+    clearInterval(hoverLeavePoll);
+    hoverLeavePoll = null;
+  }
+}
 
 function getStoredBounds() {
   const data = loadData();
@@ -60,13 +102,11 @@ function getStoredBounds() {
 
 function createWindow() {
   const data = loadData();
-  const isCollapsed = data.preferences?.isCollapsed ?? true;
-  const size = isCollapsed ? COLLAPSED_SIZE : EXPANDED_SIZE;
   const stored = getStoredBounds();
 
   const winOpts = {
-    width: stored ? stored.width : size.width,
-    height: stored ? stored.height : size.height,
+    width: stored ? stored.width : UNIFIED_SIZE.width,
+    height: stored ? stored.height : UNIFIED_SIZE.height,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -86,23 +126,62 @@ function createWindow() {
     // center on primary
     const primary = screen.getPrimaryDisplay();
     const { width: sw, height: sh } = primary.workAreaSize;
-    winOpts.x = Math.round((sw - size.width) / 2);
-    winOpts.y = Math.round((sh - size.height) / 2);
+    winOpts.x = Math.round((sw - UNIFIED_SIZE.width) / 2);
+    winOpts.y = Math.round((sh - UNIFIED_SIZE.height) / 2);
   }
 
   mainWindow = new BrowserWindow(winOpts);
+  mainWindow.setBackgroundColor('#01010101'); // prevent mouse passthrough on transparent areas
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
   // Save window bounds on move/resize
   const saveBounds = () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (!mainWindow || mainWindow.isDestroyed() || isSnapped) return;
     const bounds = mainWindow.getBounds();
     const d = loadData();
     d.preferences.windowBounds = bounds;
     saveData(d);
   };
-  mainWindow.on('move', saveBounds);
+
+  // ── Snap-to-top detection ───────────────────────────────────
+  const checkSnap = () => {
+    if (!mainWindow || mainWindow.isDestroyed() || isSnapping || isHoverExpanded) return;
+    const bounds = mainWindow.getBounds();
+    const display = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y });
+    const topEdge = display.bounds.y;
+
+    if (!isSnapped && bounds.y <= topEdge + SNAP_THRESHOLD) {
+      // Snap: position at top edge, CSS shows only snap-indicator (rest transparent)
+      isSnapping = true;
+      isSnapped = true;
+      mainWindow.setBounds({
+        x: bounds.x,
+        y: topEdge,
+        width: UNIFIED_SIZE.width,
+        height: UNIFIED_SIZE.height,
+      }, true);
+      mainWindow.webContents.send('snap-changed', true);
+      isSnapping = false;
+    } else if (isSnapped && bounds.y > topEdge + UNSNAP_THRESHOLD) {
+      // Unsnap by drag
+      isSnapping = true;
+      isSnapped = false;
+      mainWindow.setBounds({
+        x: bounds.x,
+        y: bounds.y,
+        width: UNIFIED_SIZE.width,
+        height: UNIFIED_SIZE.height,
+      }, true);
+      mainWindow.webContents.send('snap-changed', false);
+      isSnapping = false;
+    }
+  };
+
+  mainWindow.on('move', () => {
+    saveBounds();
+    checkSnap();
+  });
   mainWindow.on('resize', saveBounds);
 
   mainWindow.on('close', (e) => {
@@ -161,15 +240,9 @@ function updateTrayMenu() {
 }
 
 // ── Window resize helper ──────────────────────────────────────
+// Window size stays UNIFIED; expand/collapse is CSS-only
 function resizeWindow(collapsed) {
-  if (!mainWindow) return;
-  const size = collapsed ? COLLAPSED_SIZE : EXPANDED_SIZE;
-  const current = mainWindow.getBounds();
-  // keep top-center anchored: capsule stays in place, panel grows downward
-  const cx = current.x + Math.round(current.width / 2);
-  const newX = cx - Math.round(size.width / 2);
-  const newY = current.y; // top edge stays put
-  mainWindow.setBounds({ x: newX, y: newY, width: size.width, height: size.height }, true);
+  // no-op: window size is fixed, CSS handles the visual change
 }
 
 // ── IPC handlers ──────────────────────────────────────────────
@@ -192,6 +265,10 @@ function setupIPC() {
   });
 
   ipcMain.handle('resize-window', (_event, collapsed) => {
+    // Cancel any hover-expand state — user clicked for persistent toggle
+    isHoverExpanded = false;
+    preHoverBounds = null;
+    stopHoverLeavePoll();
     resizeWindow(collapsed);
     return true;
   });
@@ -210,6 +287,61 @@ function setupIPC() {
     app.setLoginItemSettings({ openAtLogin: enabled });
     saveData(data);
     updateTrayMenu();
+    return true;
+  });
+
+  ipcMain.handle('get-snap-state', () => isSnapped);
+
+  ipcMain.handle('hover-expand', () => {
+    if (!mainWindow || mainWindow.isDestroyed() || isHoverExpanded) return false;
+    isHoverExpanded = true;
+    const bounds = mainWindow.getBounds();
+    preHoverBounds = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+
+    if (isSnapped) {
+      mainWindow.webContents.send('hover-state', 'expanded-from-snap');
+    } else {
+      const data = loadData();
+      if (data.preferences?.isCollapsed !== false) {
+        mainWindow.webContents.send('hover-state', 'expanded-from-collapse');
+      } else {
+        isHoverExpanded = false;
+        return false;
+      }
+    }
+
+    // Start polling: check if mouse left the window
+    startHoverLeavePoll();
+    return true;
+  });
+
+  ipcMain.handle('hover-collapse', () => {
+    if (!mainWindow || mainWindow.isDestroyed() || !isHoverExpanded) return false;
+    isHoverExpanded = false;
+    preHoverBounds = null;
+    stopHoverLeavePoll();
+
+    if (isSnapped) {
+      mainWindow.webContents.send('hover-state', 'snapped');
+    } else {
+      mainWindow.webContents.send('hover-state', 'collapsed');
+    }
+    return true;
+  });
+
+  ipcMain.handle('unsnap-window', () => {
+    if (!isSnapped || !mainWindow) return false;
+    const bounds = mainWindow.getBounds();
+    const display = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y });
+    isSnapped = false;
+    isHoverExpanded = false;
+    mainWindow.setBounds({
+      x: bounds.x,
+      y: Math.max(display.bounds.y + 40, bounds.y),
+      width: UNIFIED_SIZE.width,
+      height: UNIFIED_SIZE.height,
+    }, true);
+    mainWindow.webContents.send('snap-changed', false);
     return true;
   });
 }
