@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('todoAPI', {
     ipcRenderer.on('snap-changed', (_event, snapped) => callback(snapped));
   },
   unsnapWindow: () => ipcRenderer.invoke('unsnap-window'),
+  expandFromSnap: () => ipcRenderer.invoke('expand-from-snap'),
   getSnapState: () => ipcRenderer.invoke('get-snap-state'),
   hoverExpand: () => ipcRenderer.invoke('hover-expand'),
   hoverCollapse: () => ipcRenderer.invoke('hover-collapse'),

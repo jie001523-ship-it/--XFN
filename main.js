@@ -2,7 +2,17 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, screen } = require
 const path = require('path');
 const fs = require('fs');
 
+app.commandLine.appendSwitch('in-process-gpu');
+app.commandLine.appendSwitch('disable-gpu-sandbox');
+
 const DATA_PATH = path.join(app.getPath('userData'), 'todos.json');
+const DEBUG_LOG_PATH = path.join(__dirname, 'startup-debug.log');
+
+function debugLog(message) {
+  try {
+    fs.appendFileSync(DEBUG_LOG_PATH, `[${new Date().toISOString()}] ${message}\n`, 'utf-8');
+  } catch (_) {}
+}
 
 // ── Data helpers ──────────────────────────────────────────────
 const DEFAULT_DATA = {
@@ -42,7 +52,7 @@ let isQuitting = false;
 
 const COLLAPSED_SIZE = { width: 440, height: 130 };
 const EXPANDED_SIZE = { width: 540, height: 520 };
-const SNAPPED_SIZE = { width: 200, height: 36 };
+const SNAPPED_SIZE = { width: 120, height: 36 };
 
 // ── Snap-to-top ─────────────────────────────────────────────────
 const SNAPPED_VISIBLE = 36;
@@ -51,8 +61,38 @@ const UNSNAP_THRESHOLD = 55;
 let isSnapped = false;
 let isSnapping = false;
 let isHoverExpanded = false;
+let cameFromSnap = false;
 let preHoverBounds = null;
 let hoverLeavePoll = null;
+
+function collapseHoverPreview() {
+  if (!mainWindow || mainWindow.isDestroyed() || !isHoverExpanded) return false;
+
+  isHoverExpanded = false;
+  const restore = preHoverBounds;
+  preHoverBounds = null;
+  stopHoverLeavePoll();
+
+  if (isSnapped) {
+    mainWindow.setBounds({
+      x: restore ? restore.x : mainWindow.getBounds().x,
+      y: restore ? restore.y : 0,
+      width: SNAPPED_SIZE.width,
+      height: SNAPPED_SIZE.height,
+    }, true);
+    mainWindow.webContents.send('hover-state', 'snapped');
+  } else {
+    mainWindow.setBounds({
+      x: restore ? restore.x : mainWindow.getBounds().x,
+      y: restore ? restore.y : mainWindow.getBounds().y,
+      width: COLLAPSED_SIZE.width,
+      height: COLLAPSED_SIZE.height,
+    }, true);
+    mainWindow.webContents.send('hover-state', 'collapsed');
+  }
+
+  return true;
+}
 
 function startHoverLeavePoll() {
   stopHoverLeavePoll();
@@ -67,13 +107,7 @@ function startHoverLeavePoll() {
       mousePos.x >= bounds.x && mousePos.x < bounds.x + bounds.width &&
       mousePos.y >= bounds.y && mousePos.y < bounds.y + bounds.height;
     if (!isInside) {
-      isHoverExpanded = false;
-      stopHoverLeavePoll();
-      if (isSnapped) {
-        mainWindow.webContents.send('hover-state', 'snapped');
-      } else {
-        mainWindow.webContents.send('hover-state', 'collapsed');
-      }
+      collapseHoverPreview();
     }
   }, 250);
 }
@@ -117,6 +151,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
     },
   };
   if (stored) {
@@ -131,13 +166,31 @@ function createWindow() {
   }
 
   mainWindow = new BrowserWindow(winOpts);
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  const rendererPath = path.join(__dirname, 'renderer', 'index.html');
+  mainWindow.loadFile(rendererPath);
+  mainWindow.webContents.on('did-finish-load', () => debugLog('renderer loaded'));
+  mainWindow.webContents.on('dom-ready', () => debugLog('renderer dom-ready'));
+  mainWindow.webContents.on('render-process-gone', (_event, details) => debugLog(`renderer gone ${JSON.stringify(details)}`));
+  mainWindow.webContents.on('did-fail-load', (_event, code, description, url) => debugLog(`load failed ${code} ${description} ${url}`));
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => debugLog(`console ${level} ${message} ${sourceId}:${line}`));
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.setAlwaysOnTop(true);
+  });
+  // Keep the window behavior conservative during development; some Windows
+  // environments crash when transparent always-on-top windows also request
+  // all-workspaces visibility.
 
   // Save window bounds on move/resize
   const saveBounds = () => {
     if (!mainWindow || mainWindow.isDestroyed() || isSnapped) return;
     const bounds = mainWindow.getBounds();
+    // If user dragged the expanded-from-snap window away, cancel snap-back
+    if (cameFromSnap && bounds.y > 60) {
+      cameFromSnap = false;
+    }
     const d = loadData();
     d.preferences.windowBounds = bounds;
     saveData(d);
@@ -150,7 +203,7 @@ function createWindow() {
     const display = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y });
     const topEdge = display.bounds.y;
 
-    if (!isSnapped && bounds.y <= topEdge + SNAP_THRESHOLD) {
+    if (!isSnapped && bounds.y <= topEdge + SNAP_THRESHOLD && !cameFromSnap) {
       // Snap: shrink to mini pill at top
       isSnapping = true;
       isSnapped = true;
@@ -166,6 +219,7 @@ function createWindow() {
       // Unsnap by drag: restore collapsed size
       isSnapping = true;
       isSnapped = false;
+      cameFromSnap = false;
       mainWindow.setBounds({
         x: bounds.x,
         y: bounds.y,
@@ -191,7 +245,7 @@ function createWindow() {
     }
   });
 
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('closed', () => { debugLog('window closed'); mainWindow = null; });
 }
 
 // ── Tray ──────────────────────────────────────────────────────
@@ -268,10 +322,27 @@ function setupIPC() {
   });
 
   ipcMain.handle('resize-window', (_event, collapsed) => {
-    // Cancel any hover-expand state — user clicked for persistent toggle
     isHoverExpanded = false;
     preHoverBounds = null;
     stopHoverLeavePoll();
+
+    if (collapsed && cameFromSnap) {
+      // Snap back instead of collapsing
+      cameFromSnap = false;
+      isSnapped = true;
+      const bounds = mainWindow.getBounds();
+      const display = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y });
+      const cx = bounds.x + Math.round(bounds.width / 2);
+      mainWindow.setBounds({
+        x: cx - Math.round(SNAPPED_SIZE.width / 2),
+        y: display.bounds.y,
+        width: SNAPPED_SIZE.width,
+        height: SNAPPED_SIZE.height,
+      }, true);
+      mainWindow.webContents.send('snap-changed', true);
+      return true;
+    }
+
     resizeWindow(collapsed);
     return true;
   });
@@ -294,6 +365,27 @@ function setupIPC() {
   });
 
   ipcMain.handle('get-snap-state', () => isSnapped);
+
+  ipcMain.handle('expand-from-snap', () => {
+    if (!isSnapped || !mainWindow) return false;
+    isHoverExpanded = false;
+    stopHoverLeavePoll();
+    cameFromSnap = true;
+    isSnapped = false;
+    isSnapping = true; // prevent checkSnap from re-snapping
+    const bounds = mainWindow.getBounds();
+    const display = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y });
+    const cx = bounds.x + Math.round(bounds.width / 2);
+    mainWindow.setBounds({
+      x: cx - Math.round(EXPANDED_SIZE.width / 2),
+      y: display.bounds.y,
+      width: EXPANDED_SIZE.width,
+      height: EXPANDED_SIZE.height,
+    }, true);
+    isSnapping = false;
+    mainWindow.webContents.send('snap-changed', false);
+    return true;
+  });
 
   ipcMain.handle('hover-expand', () => {
     if (!mainWindow || mainWindow.isDestroyed() || isHoverExpanded) return false;
@@ -333,30 +425,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('hover-collapse', () => {
-    if (!mainWindow || mainWindow.isDestroyed() || !isHoverExpanded) return false;
-    isHoverExpanded = false;
-    const restore = preHoverBounds;
-    preHoverBounds = null;
-    stopHoverLeavePoll();
-
-    if (isSnapped) {
-      mainWindow.setBounds({
-        x: restore ? restore.x : mainWindow.getBounds().x,
-        y: 0,
-        width: SNAPPED_SIZE.width,
-        height: SNAPPED_SIZE.height,
-      }, true);
-      mainWindow.webContents.send('hover-state', 'snapped');
-    } else {
-      mainWindow.setBounds({
-        x: restore ? restore.x : mainWindow.getBounds().x,
-        y: restore ? restore.y : mainWindow.getBounds().y,
-        width: COLLAPSED_SIZE.width,
-        height: COLLAPSED_SIZE.height,
-      }, true);
-      mainWindow.webContents.send('hover-state', 'collapsed');
-    }
-    return true;
+    return collapseHoverPreview();
   });
 
   ipcMain.handle('unsnap-window', () => {
@@ -381,15 +450,18 @@ function setupIPC() {
 app.whenReady().then(() => {
   setupIPC();
   createWindow();
-  createTrayIcon();
+  // createTrayIcon();
   const data = loadData();
-  app.setLoginItemSettings({ openAtLogin: data.preferences?.autoLaunch ?? true });
+  // app.setLoginItemSettings({ openAtLogin: data.preferences?.autoLaunch ?? true });
 });
 
-app.on('window-all-closed', () => { /* keep alive in tray */ });
+app.on('window-all-closed', () => { debugLog('window-all-closed'); /* keep alive in tray */ });
 
 app.on('activate', () => {
   if (mainWindow) mainWindow.show();
 });
 
-app.on('before-quit', () => { isQuitting = true; });
+app.on('before-quit', () => { debugLog('before-quit'); isQuitting = true; });
+app.on('quit', (_event, code) => { debugLog(`quit ${code}`); });
+process.on('uncaughtException', (err) => debugLog(`uncaught ${err.stack || err.message}`));
+process.on('unhandledRejection', (reason) => debugLog(`unhandled ${reason && reason.stack ? reason.stack : reason}`));

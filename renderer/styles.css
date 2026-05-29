@@ -136,6 +136,11 @@ html, body {
   color: var(--text-primary);
   background: rgba(255,255,255,0.3);
 }
+.expand-arrow.hover-arming {
+  color: var(--text-primary);
+  background: rgba(255,255,255,0.5);
+  transform: translateY(2px) scale(1.06);
+}
 .expand-arrow:active {
   background: rgba(255,255,255,0.45);
 }
@@ -536,6 +541,12 @@ html, body {
 }
 .snap-indicator:hover {
   color: var(--text-primary);
+}
+.snap-indicator.hover-arming {
+  color: var(--text-primary);
+  background: rgba(255,255,255,0.96);
+  box-shadow: 0 6px 22px rgba(0,0,0,0.14),
+              inset 0 1px 0 rgba(255,255,255,0.6);
 }
 .snap-indicator > svg {
   width: 16px;

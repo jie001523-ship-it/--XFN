@@ -481,10 +481,22 @@ capsule.addEventListener('dblclick', (e) => {
   toggleCollapse();
 });
 
+let expandedFromSnapClick = false;
+
+// ... (keep existing code)
+
 // Expand arrow click → toggle (separate because capsule is a drag region)
 expandArrow.addEventListener('click', (e) => {
   e.stopPropagation();
-  toggleCollapse();
+  if (expandedFromSnapClick) {
+    // Collapse back to snapped
+    expandedFromSnapClick = false;
+    window.todoAPI.resizeWindow(true); // triggers snap-back via cameFromSnap
+    state.isCollapsed = true;
+    updateUIMode();
+  } else {
+    toggleCollapse();
+  }
 });
 
 // + button → open add or close input
@@ -560,6 +572,7 @@ window.todoAPI.onSnapChanged((snapped) => {
   if (snapped) {
     app.classList.add('snapped');
     app.classList.remove('expanded', 'collapsed');
+    expandedFromSnapClick = false;
   } else {
     app.classList.remove('snapped');
   }
@@ -576,16 +589,31 @@ window.todoAPI.onHoverState((state) => {
 
 let hoverExpandTimer = null;
 let hoverCollapseTimer = null;
+let hoverArmedTarget = null;
 
 function clearAllHoverTimers() {
   if (hoverExpandTimer) { clearTimeout(hoverExpandTimer); hoverExpandTimer = null; }
   if (hoverCollapseTimer) { clearTimeout(hoverCollapseTimer); hoverCollapseTimer = null; }
+  if (hoverArmedTarget) {
+    hoverArmedTarget.classList.remove('hover-arming');
+    hoverArmedTarget = null;
+  }
 }
 
-function scheduleHoverExpand() {
+function scheduleHoverExpand(target) {
   clearAllHoverTimers();
+  hoverArmedTarget = target;
+  hoverArmedTarget.classList.add('hover-arming');
   hoverExpandTimer = setTimeout(() => {
-    window.todoAPI.hoverExpand();
+    if (!hoverArmedTarget || !hoverArmedTarget.matches(':hover')) {
+      clearAllHoverTimers();
+      return;
+    }
+    const targetToClear = hoverArmedTarget;
+    window.todoAPI.hoverExpand().finally(() => {
+      targetToClear.classList.remove('hover-arming');
+      if (hoverArmedTarget === targetToClear) hoverArmedTarget = null;
+    });
     hoverExpandTimer = null;
   }, 500);
 }
@@ -598,13 +626,21 @@ function scheduleHoverCollapse() {
   }, 300);
 }
 
-// Hover peek triggers via body mouseover (bubbles from child elements)
-document.body.addEventListener('mouseover', (e) => {
-  if (snapIndicator.contains(e.target)) {
-    scheduleHoverExpand();
-  } else if (expandArrow.contains(e.target) && !app.classList.contains('snapped')) {
-    scheduleHoverExpand();
-  }
+snapIndicator.addEventListener('mouseenter', () => {
+  scheduleHoverExpand(snapIndicator);
+});
+
+snapIndicator.addEventListener('mouseleave', () => {
+  clearAllHoverTimers();
+});
+
+expandArrow.addEventListener('mouseenter', () => {
+  if (app.classList.contains('snapped')) return;
+  scheduleHoverExpand(expandArrow);
+});
+
+expandArrow.addEventListener('mouseleave', () => {
+  clearAllHoverTimers();
 });
 
 // Click to persist expand/collapse (cancel hover behavior)
@@ -612,11 +648,26 @@ expandArrow.addEventListener('click', () => {
   clearAllHoverTimers();
 });
 
-snapIndicator.addEventListener('click', (e) => {
+snapIndicator.addEventListener('click', async (e) => {
   e.stopPropagation();
   clearAllHoverTimers();
-  window.todoAPI.unsnapWindow();
+  expandedFromSnapClick = true;
+  await window.todoAPI.expandFromSnap();
+  state.isCollapsed = false;
+  updateUIMode();
+  renderAll();
 });
+
+// When user interacts during hover-preview from snap, switch to persistent expand
+app.addEventListener('click', (e) => {
+  if (!app.classList.contains('hover-expanded-snap')) return;
+  clearAllHoverTimers();
+  app.classList.remove('hover-expanded-snap');
+  expandedFromSnapClick = true;
+  state.isCollapsed = false;
+  updateUIMode();
+  window.todoAPI.expandFromSnap();
+}, true);
 
 // ── Init ──────────────────────────────────────────────────────
 async function init() {
