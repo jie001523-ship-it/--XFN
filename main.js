@@ -145,7 +145,7 @@ function createWindow() {
     transparent: true,
     alwaysOnTop: true,
     resizable: false,
-    skipTaskbar: false,
+    skipTaskbar: true,
     icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -250,22 +250,17 @@ function createWindow() {
 
 // ── Tray ──────────────────────────────────────────────────────
 function createTrayIcon() {
-  // 16x16 PNG base64 – simple rounded icon
-  const ico = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAA' +
-    'BHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAbwAAAG8B8aLcQwAAABl0RVh0U29mdHdhcmUA' +
-    'd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAAEoSURBVFiF7ZYxbsIwFIb/5yWVGNgYeoOwseYM' +
-    'HIEzcAaOwMqFeoaycoMeoRJDJQYmhJQQO8F2HCd5sUMlhv5vsf38/PZrgqIoTdO/MAJY' +
-    'AI6GYQd4AboiB6UUWmu01mit0VojhPiKEMJ7JqUEWZahqiqUZQkRQghUVYU8z5EkCYQQ' +
-    'SNMUZVnyXJ7nAmOM3yshRA4AFxcX2O/3WC6XmEwmAIDNZoPtdivH4zH2+72UUpJlMplg' +
-    't9tht9tJRBHwBa7rGpPJBKvVCpvNBkopLJdL9Pt9xHEMpRS01tjtdhC2fP+E3W6HYRiQ' +
-    'JAm01pjP55RS4rou2u02+v0+wjDE/f39rwHEca8QAmVZQggBKSXCMESn08FgMMB0OsX5' +
-    '+Tkmkwm01lBKodlsQvwJQBz3uq4LKSV6vR7CMESv10On08FgMECapri8vMTFxf/cwqL4' +
-    'BPtrY8EuIt1OAAAAAElFTkSuQmCC'
-  );
-  tray = new Tray(ico.resize({ width: 16, height: 16 }));
+  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+  let trayIcon;
+  try {
+    trayIcon = nativeImage.createFromPath(iconPath);
+    if (trayIcon.isEmpty()) throw new Error('icon empty');
+  } catch (_) {
+    trayIcon = nativeImage.createEmpty();
+  }
+  tray = new Tray(trayIcon.resize({ width: 32, height: 32 }));
   updateTrayMenu();
-  tray.setToolTip('桌面待办');
+  tray.setToolTip('桌面待办 — 双击显示');
   tray.on('double-click', () => {
     if (mainWindow) mainWindow.show();
   });
@@ -450,9 +445,9 @@ function setupIPC() {
 app.whenReady().then(() => {
   setupIPC();
   createWindow();
-  // createTrayIcon();
+  createTrayIcon();
   const data = loadData();
-  // app.setLoginItemSettings({ openAtLogin: data.preferences?.autoLaunch ?? true });
+  app.setLoginItemSettings({ openAtLogin: data.preferences?.autoLaunch ?? true });
 });
 
 app.on('window-all-closed', () => { debugLog('window-all-closed'); /* keep alive in tray */ });
